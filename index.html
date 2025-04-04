@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Piano 3D Realista</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #111;
+            font-family: sans-serif;
+        }
+
+        #canvas-container {
+            width: 100vw;
+            height: 100vh;
+            position: relative;
+        }
+
+        #note-display,
+        #title {
+            position: absolute;
+            color: white;
+            font-size: 2em;
+            z-index: 10;
+            text-align: center;
+            width: 100%;
+        }
+
+        #title {
+            top: 10px;
+        }
+
+        #note-display {
+            bottom: 20px;
+        }
+
+        #play-button {
+            position: absolute;
+            top: 70px;
+            left: 50%;
+            transform: translateX(-50%);
+            padding: 10px 20px;
+            font-size: 1.2em;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            z-index: 100;
+        }
+
+        #play-button:hover {
+            background-color: #45a049;
+        }
+
+        #song-title {
+            position: absolute;
+            top: 120px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: white;
+            font-size: 1.2em;
+            z-index: 100;
+            text-align: center;
+            width: 100%;
+        }
+
+        canvas {
+            display: block;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="canvas-container">
+        <div id="title">Hola te amo</div>
+        <button id="play-button">Play :0</button>
+    
+        <div id="note-display"></div>
+    </div>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.155.0/build/three.min.js"></script>
+    <script>
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x111111);
+
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+        camera.position.set(0, 6, 20);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.getElementById("canvas-container").appendChild(renderer.domElement);
+
+        const keys = [];
+        const blackKeys = [];
+        let audioCtx;
+        const noteDisplay = document.getElementById("note-display");
+        const playButton = document.getElementById("play-button");
+
+        const whiteNotes = [
+            "C", "D", "E", "F", "G", "A", "B"
+        ];
+
+        const semitoneNames = [
+            "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"
+        ];
+
+        function getFrequency(noteIndex) {
+            return 440 * Math.pow(2, (noteIndex - 57) / 12); // 57 = A4 index
+        }
+
+        // Crear 2 octavas = 14 teclas blancas (C4 a B5)
+        const whiteKeyCount = 14;
+        let whiteNoteIndex = 0;
+
+        for (let i = 0; i < whiteKeyCount; i++) {
+            const geometry = new THREE.BoxGeometry(1, 0.5, 4);
+            const material = new THREE.MeshStandardMaterial({ color: 0xffffff });
+            const key = new THREE.Mesh(geometry, material);
+            key.position.x = i * 1.1 - (whiteKeyCount * 1.1) / 2;
+            key.position.y = 0;
+
+            const semitone = i + Math.floor(i / 7);
+            const freq = getFrequency(semitone + 48); // base at C4
+
+            key.userData = { freq: freq, name: semitoneNames[(semitone + 0) % 12], isBlack: false };
+            scene.add(key);
+            keys.push(key);
+        }
+
+        // Crear teclas negras (omitidas entre E-F y B-C)
+        const skipBlack = [2, 6, 9, 13];
+        for (let i = 0; i < whiteKeyCount - 1; i++) {
+            if (skipBlack.includes(i)) continue;
+            const geometry = new THREE.BoxGeometry(0.6, 0.5, 2.5);
+            const material = new THREE.MeshStandardMaterial({ color: 0x000000 });
+            const key = new THREE.Mesh(geometry, material);
+            key.position.x = i * 1.1 + 0.55 - (whiteKeyCount * 1.1) / 2;
+            key.position.y = 0.3;
+            key.position.z = -0.5;
+
+            const semitone = i + Math.floor(i / 7);
+            const freq = getFrequency(semitone + 49); // black key one semitone up
+
+            key.userData = { freq: freq, name: semitoneNames[(semitone + 1) % 12], isBlack: true };
+            scene.add(key);
+            keys.push(key);
+            blackKeys.push(key);
+        }
+
+        // Luces
+        const ambientLight = new THREE.AmbientLight(0x333333);
+        scene.add(ambientLight);
+
+        const dirLight = new THREE.DirectionalLight(0xffffff, 1);
+        dirLight.position.set(5, 10, 7.5);
+        scene.add(dirLight);
+
+        const spotLight = new THREE.SpotLight(0xffffff, 1);
+        spotLight.position.set(0, 20, 10);
+        spotLight.castShadow = true;
+        scene.add(spotLight);
+
+        // Piso
+        const floor = new THREE.Mesh(
+            new THREE.PlaneGeometry(50, 50),
+            new THREE.MeshStandardMaterial({ color: 0x222222 })
+        );
+        floor.rotation.x = -Math.PI / 2;
+        floor.position.y = -0.26;
+        scene.add(floor);
+
+        // Interacción
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2();
+
+        function initAudio() {
+            if (!audioCtx) {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            }
+        }
+
+        function playNote(freq, name, duration = 1) {
+            initAudio();
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = "sine";
+            osc.frequency.value = freq;
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
+            osc.start();
+            osc.stop(audioCtx.currentTime + duration);
+            noteDisplay.textContent = name;
+            return osc;
+        }
+
+        function onMouseClick(event) {
+            initAudio();
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObjects(keys);
+
+            if (intersects.length > 0) {
+                const key = intersects[0].object;
+                playNote(key.userData.freq, key.userData.name);
+
+                const originalY = key.position.y;
+                key.position.y -= 0.1;
+                setTimeout(() => key.position.y = originalY, 100);
+            }
+        }
+
+        window.addEventListener("click", onMouseClick);
+
+        // Función para reproducir la canción con las notas específicas
+        function playSong() {
+            initAudio();
+            
+            // Notas basadas en tu imagen (interpretación)
+            // Asumo que las líneas representan duraciones diferentes
+            const songNotes = [
+                { note: "C", octave: 5, duration: 0.6 },  // 可
+                { note: "E", octave: 5, duration: 0.3 },  // Z (nota corta)
+                { note: "G", octave: 4, duration: 0.6 },  // er
+                { note: "A", octave: 4, duration: 0.6 },  // ee
+                { note: "B", octave: 4, duration: 0.6 },  // oe
+                { note: "C", octave: 5, duration: 0.9 },  // @_@ (nota más larga)
+                { note: "D", octave: 5, duration: 0.6 },  // o—
+                { note: "E", octave: 5, duration: 0.6 },  // (continuación)
+                { note: "D", octave: 5, duration: 0.6 },  // (continuación)
+                { note: "C", octave: 5, duration: 0.9 }   // (final)
+            ];
+
+            // Mapeo de notas a índices (C4 = 48, C#4 = 49, etc.)
+            const noteToIndex = {
+                "C": 0, "C#": 1, "D": 2, "D#": 3, "E": 4, 
+                "F": 5, "F#": 6, "G": 7, "G#": 8, "A": 9, "A#": 10, "B": 11
+            };
+
+            let currentTime = audioCtx.currentTime;
+            
+            songNotes.forEach((songNote, i) => {
+                const noteIndex = noteToIndex[songNote.note] + (songNote.octave * 12);
+                const freq = getFrequency(noteIndex);
+                
+                // Programar la nota
+                setTimeout(() => {
+                    noteDisplay.textContent = `${songNote.note}${songNote.octave}`;
+                    
+                    // Encontrar y animar la tecla correspondiente
+                    const key = keys.find(k => 
+                        k.userData.name === songNote.note.replace(/#/g, '') && 
+                        Math.abs(k.userData.freq - freq) < 0.1
+                    );
+                    
+                    if (key) {
+                        const originalY = key.position.y;
+                        key.position.y -= 0.1;
+                        setTimeout(() => key.position.y = originalY, songNote.duration * 500);
+                    }
+                    
+                    // Reproducir la nota
+                    playNote(freq, `${songNote.note}${songNote.octave}`, songNote.duration);
+                }, i * 600); // 600ms entre notas
+            });
+        }
+
+        playButton.addEventListener("click", () => {
+            if (audioCtx && audioCtx.state === 'suspended') {
+                audioCtx.resume();
+            }
+            playSong();
+        });
+
+        window.addEventListener("resize", () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        function animate() {
+            requestAnimationFrame(animate);
+            renderer.render(scene, camera);
+        }
+        animate();
+    </script>
+</body>
+
+</html>
